@@ -1,0 +1,95 @@
+#!/bin/tcsh
+# Set Environment PATH
+setenv PATH /bin:/usr/bin:/usr/local/bin:/sbin:/usr/sbin:/usr/local/sbin
+
+# Date variables
+set M = `date +"%M"`
+set H = `date +"%H"`
+set D = `date +"%d"`
+set W = `date +"%U"`
+set M = `date +"%m"`
+set Y = "20"`date +"%y"`
+
+# Directories
+set NSD = "/usr/local/etc/nsd"
+set DNSSEC = "$NSD/dnssec"
+set ZONE = "$NSD/zone"
+set BACKUP = "$NSD/archive/$Y-$M$D-$H$M"
+
+set GEN_KSK = 'false'
+set GEN_DS = 'false'
+
+# Prompt for domain
+echo ""
+echo "Enter the domain name:"
+set DOMAIN = $<
+echo ""
+echo "Creating DNSSEC for $DOMAIN"
+
+mkdir $BACKUP
+
+echo " * Backup of dnssec files to $BACKUP"
+cp -R $DNSSEC $BACKUP
+
+echo " * Backup of zone files to $BACKUP"
+cp -R $ZONE $BACKUP
+
+# Change to the directory
+cd $DNSSEC
+
+# Find matching files and count them
+echo " * Checking for keys"
+set FILES = (`ls K${DOMAIN}*.key`)
+set COUNT = $#FILES
+
+# Check if the number of files is exactly two
+if ($COUNT != 2) then
+  echo " * No keys found"
+  
+  echo " * Cleaning"
+  rm k$domain*
+
+  echo " * Generating keys"
+  
+  # Generate ZSK
+  echo " * Creating ZSK for $DOMAIN"
+  set ZSK = `ldns-keygen -a RSASHA256 -b 2048 $DOMAIN`
+
+  # Generate KSK
+  echo " * Creating KSK for $DOMAIN"
+  set KSK = `ldns-keygen -k -a RSASHA256 -b 3072 $DOMAIN`
+else
+  echo " * Keys found"
+  
+  # Sort files by size - smallest first
+  set SORTED = (`ls -S K${DOMAIN}*.key | sort -n`)
+
+  # Assign the smaller file to ZSK and the larger file to KSK
+  set ZSK = $SORTED[1]
+  set KSK = $SORTED[2]
+  # Remove extensions
+  set ZSK = `echo $ZSK:r`
+  set KSK = `echo $KSK:r`
+endif
+
+echo " * Creating for $DOMAIN"
+
+# Sign zone file
+set SEED = `head -n 1000 /dev/random | sha1sum | cut -b 1-16`
+
+echo " * Siging zone file $ZONE/$DOMAIN"
+ldns-signzone -n -p -s $SEED $ZONE/$DOMAIN $ZSK $KSK
+
+if (! -e $DNSSEC/$DOMAIN.ds) then
+  # Run if file doesn't exist
+  echo " * Generating ds data"
+  ldns-key2ds -n -2 $ZONE/$DOMAIN.signed > $DNSSEC/$DOMAIN.ds
+endif
+
+echo " * Restarting NSD"
+echo ""
+service nsd restart
+echo ""
+echo "Done!"
+echo ""
+echo ""
